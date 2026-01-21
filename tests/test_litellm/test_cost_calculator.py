@@ -597,6 +597,123 @@ def test_gemini_25_implicit_caching_cost():
     print(f"✓ Gemini 2.5 implicit caching cost calculation is correct: ${result:.8f}")
 
 
+def test_azure_ai_cache_cost_calculation():
+    """
+    Test that cache costs are properly calculated for azure_ai provider
+    (which falls into the else branch of cost_per_token).
+
+    This test verifies that when cache costs are registered via litellm.register_model,
+    they are properly used by providers that don't have custom cost calculation handlers.
+    """
+    from litellm import completion_cost
+    from litellm.types.utils import (
+        Choices,
+        Message,
+        ModelResponse,
+        PromptTokensDetailsWrapper,
+        Usage,
+    )
+
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    # Register a custom model with cache costs
+    litellm.register_model(
+        model_cost={
+            "azure_ai/claude-opus-4-5": {
+                "input_cost_per_token": 5.0e-06,
+                "output_cost_per_token": 2.5e-05,
+                "cache_creation_input_token_cost": 6.25e-06,
+                "cache_read_input_token_cost": 5.0e-07,
+                "litellm_provider": "azure_ai",
+                "mode": "chat",
+            }
+        }
+    )
+
+    # Response WITHOUT caching - all tokens are regular input tokens
+    response_no_cache = ModelResponse(
+        id="msg_no_cache",
+        created=1750733889,
+        model="azure_ai/claude-opus-4-5",
+        object="chat.completion",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=Message(
+                    content="Response without cache",
+                    role="assistant",
+                ),
+            )
+        ],
+        usage=Usage(
+            total_tokens=1100,
+            prompt_tokens=1000,
+            completion_tokens=100,
+        ),
+    )
+
+    # Response WITH caching - most tokens are read from cache
+    response_with_cache = ModelResponse(
+        id="msg_with_cache",
+        created=1750733889,
+        model="azure_ai/claude-opus-4-5",
+        object="chat.completion",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=Message(
+                    content="Response with cache",
+                    role="assistant",
+                ),
+            )
+        ],
+        usage=Usage(
+            **{
+                "total_tokens": 1100,
+                "prompt_tokens": 1000,
+                "completion_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 900},  # 900 tokens from cache
+                "cache_read_input_tokens": 900,  # 900 tokens read from cache (cheaper)
+                "cache_creation_input_tokens": 50,  # 50 new tokens added to cache
+            }
+        ),
+    )
+
+    # Calculate costs
+    cost_no_cache = completion_cost(
+        completion_response=response_no_cache,
+        model="azure_ai/claude-opus-4-5",
+        custom_llm_provider="azure_ai",
+    )
+
+    cost_with_cache = completion_cost(
+        completion_response=response_with_cache,
+        model="azure_ai/claude-opus-4-5",
+        custom_llm_provider="azure_ai",
+    )
+
+    # Without cache: 1000 * 5e-6 + 100 * 2.5e-5 = 0.005 + 0.0025 = 0.0075
+    # With cache:
+    #   - Regular input tokens: (1000 - 900 - 50) = 50 * 5e-6 = 0.00025
+    #   - Cache read tokens: 900 * 5e-7 = 0.00045
+    #   - Cache creation tokens: 50 * 6.25e-6 = 0.0003125
+    #   - Output tokens: 100 * 2.5e-5 = 0.0025
+    #   Total = 0.00025 + 0.00045 + 0.0003125 + 0.0025 = 0.0035125
+
+    # Verify that cached request is cheaper
+    assert (
+        cost_with_cache < cost_no_cache
+    ), f"Expected cached cost ({cost_with_cache}) to be less than non-cached cost ({cost_no_cache})"
+
+    print(f"✓ Azure AI cache cost test passed")
+    print(f"  Cost without cache: ${cost_no_cache:.8f}")
+    print(f"  Cost with cache: ${cost_with_cache:.8f}")
+    print(f"  Savings: ${cost_no_cache - cost_with_cache:.8f}")
+
+
 def test_log_context_cost_calculation():
     """
     Test that log context cost calculation works correctly with tiered pricing.

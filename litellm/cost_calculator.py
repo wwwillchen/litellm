@@ -423,6 +423,17 @@ def cost_per_token(  # noqa: PLR0915
 
         return dashscope_cost_per_token(model=model, usage=usage_block)
     else:
+        # Use generic_cost_per_token for all other providers to properly handle
+        # cache costs and other detailed pricing components
+        if custom_llm_provider is not None:
+            return generic_cost_per_token(
+                model=model,
+                usage=usage_block,
+                custom_llm_provider=custom_llm_provider,
+                service_tier=service_tier,
+            )
+
+        # Fallback for when custom_llm_provider is None - use simple cost calculation
         model_info = _cached_get_model_info_helper(
             model=model, custom_llm_provider=custom_llm_provider
         )
